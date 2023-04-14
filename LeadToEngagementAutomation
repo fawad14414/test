@@ -1,0 +1,842 @@
+using KPMG.Dynamics365.UIAutomation.Test_Cases.Lead;
+using Microsoft.Dynamics365.UIAutomation.Api.UCI;
+using Microsoft.Dynamics365.UIAutomation.Browser;
+using NUnit.Framework;
+using OpenQA.Selenium;
+using OpenQA.Selenium.Interactions;
+using OpenQA.Selenium.Support.UI;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+
+namespace KPMG.Dynamics365.UIAutomation
+{
+    [FixtureLifeCycle(LifeCycle.InstancePerTestCase)]
+    [Parallelizable(ParallelScope.Children)]
+    [TestFixture]
+    public class LeadToEngagementAutomation : BaseAutomationClass
+    {
+        private string leadName = string.Empty;
+        private string opportunityName = string.Empty;
+        private string leadAccount = string.Empty;
+        private string oppEndClient = string.Empty;
+        private string leadEstimatedBudget = string.Empty;
+        private string expectedUKOpportunityFee = string.Empty;
+        private string expectedPrimaryServiceCode = string.Empty;
+        private DateTime expectedForecastStartDate = new DateTime();
+        private DateTime expectedForecastEndDate = new DateTime();
+        private string expectedEngagementLeader = string.Empty;
+        private string expectedProfitCenter = string.Empty;
+        private string leadSource = string.Empty;
+        private DateTime expectedClientFeedbackSurveySendDate = new DateTime();
+        private string oppSignedEngagementLetter = string.Empty;
+        private string oppRiskDeclaration = string.Empty;
+        private string oppPaymentTerms = string.Empty;
+        private bool oppOverSeasTravelRequired = false;
+        private string oppSupportedByIgnition = string.Empty;
+        private bool isOppRestricted = false;
+        private List<string> leadTags;
+        private List<string> oppTags;
+
+        List<GridItem> oppServicesList = new List<GridItem>();
+        List<GridItem> oppTeamMembers = new List<GridItem>();
+        List<GridItem> oppInvolvedParties = new List<GridItem>();
+
+        private int[] expectedRequirementLevel = new int[] { 1, 2 };  //1 or 2 = required
+        private int requirementLevelOptional = 0;
+        private int requiredVal = 0;   //default value, 0 = not required
+        bool isAdminApp = false;
+        bool isRestrictedProcess = false;
+        private LeadHelper leadHelper;
+
+        [SetUp]
+        public void Initialize()
+        {
+            leadHelper = new LeadHelper(this);
+        }
+
+
+
+        /// <summary>
+        /// Test Cases: 20295 & 20333
+        /// Test Objective: Test the full process of creating a restricted lead to engagement
+        /// And confirming values are inherited from lead to engagement
+        /// </summary>
+        /// <param name="currentApp">Display name of the app under test.</param>
+        /// <param name="engagementRowNum">Specify which row number on the Engagement Grid opens. Helpful in Parallel Tests.</param>
+        [Test]
+        [TestCase(DTOs.Reference.KPMGAppName.Admin_Sales)]
+        [TestCase(DTOs.Reference.KPMGAppName.Sales)]
+        public void RestrictedLeadToEngagement_Test(string currentApp)
+        {
+            isRestrictedProcess = true;
+
+            XrmApp.OnlineLogin.Login(AutomationSetup._xrmUri, AutomationSetup._username, AutomationSetup._password, null, Client.ADFSLoginAction);
+
+            XrmApp.Navigation.OpenApp(currentApp);
+
+            //navigate to subarea based on app type
+            if (currentApp.Equals(DTOs.Reference.KPMGAppName.Admin_Sales))
+                XrmApp.Navigation.OpenSubArea(DTOs.Reference.KPMG_AppArea_Sale.Clients, DTOs.Reference.KPMG_AppArea_Sale.Lead);
+            else
+                XrmApp.Navigation.OpenSubArea(DTOs.Reference.KPMG_AppArea_Sale.Title, DTOs.Reference.KPMG_AppArea_Sale.Lead);
+
+            RestrictedLeadProcess();
+
+            OpportunityProcess(currentApp);
+
+            EngagementProcess();
+        }
+
+
+        /// <summary>
+        /// The method is automation of lead to engagment process for non restricted
+        /// create lead record convert to opportunity and then opportunity to engagement
+        /// Test Case 20492 and 20502
+        /// </summary>
+        /// <param name="currentApp"></param>
+        [Test]
+        [TestCase(DTOs.Reference.KPMGAppName.Admin_Sales)]
+        [TestCase(DTOs.Reference.KPMGAppName.Sales)]
+        public void NonRestrictedLeadToEngagement_Test(string currentApp)
+        {
+
+            string areaName = DTOs.Reference.KPMG_AppArea_Sale.Title;
+            isAdminApp = false;
+            if (currentApp == DTOs.Reference.KPMGAppName.Admin_Sales)
+            {
+                isAdminApp = true;
+                areaName = DTOs.Reference.KPMG_AppArea_Sale.Clients;
+            }
+            XrmApp.OnlineLogin.Login(AutomationSetup._xrmUri, AutomationSetup._username, AutomationSetup._password, null, Client.ADFSLoginAction);
+
+            XrmApp.Navigation.OpenApp(currentApp);
+
+            XrmApp.Navigation.OpenSubArea(areaName, DTOs.Reference.KPMG_AppArea_Sale.Lead);
+
+            NonRestrictedLeadProcess(currentApp);
+
+            OpportunityProcess(currentApp);
+
+            EngagementProcess();
+
+        }
+        /// <summary>
+        /// Managing the restricted lead process for both apps.
+        /// </summary>
+        /// <param name="appName">The model driven app name.</param>
+        /// <returns></returns>
+        public void RestrictedLeadProcess()
+        {
+            string expectedRestrictedType = "Restricted by Service";
+
+            //create new lead
+            CreateLead();
+
+            //create restricted lead client need
+            leadHelper.AddRelatedClientNeed("SL1 Financial Statement Audit", false);
+
+            //check if lead is restricted
+            string restrictedType = XrmApp.Entity.GetHeaderValue(new OptionSet { Name = "kpmg_restricted" });
+            Assert.AreEqual(expectedRestrictedType, restrictedType);
+
+            KPMG_Helper.Form.CloseFormHeaderPanel();
+
+            XrmApp.Entity.SelectTab("Summary");
+
+            bool isRestricted = XrmApp.Entity.GetValue(new BooleanItem { Name = "kpmg_restrict" });
+            Assert.IsTrue(isRestricted);
+
+            //add tags
+            leadHelper.AddTag("Data Migration");
+            leadHelper.AddTag("Cyber Risk Insights");
+
+            XrmApp.ThinkTime(2000);
+            leadTags = KPMG_Helper.Form.RetrieveTagDetails();
+
+            //Update BPF
+            UpdateLeadBPF();
+        }
+        /// <summary>
+        /// fill in all the required fields and create a new lead
+        /// </summary>
+        private void CreateLead()
+        {
+            string capability = (isRestrictedProcess) ? "C1 Audit" : "Audit Consulting";
+            string parentAccount = (isRestrictedProcess) ? "Aastha Tiwari" : "28994-1";
+            string parentContact = (isRestrictedProcess) ? "Mostafa Sadek" : "213 234";
+            XrmApp.CommandBar.ClickCommand("New");
+
+            XrmApp.Entity.SetValue("subject", TestSettings.GetRandomString(5, 15));
+            leadName = XrmApp.Entity.GetValue("subject");
+            XrmApp.Entity.SetValue(new OptionSet { Name = "leadsourcecode", Value = "700830000" });
+            leadSource = XrmApp.Entity.GetValue((new OptionSet { Name = "leadsourcecode" }));
+            XrmApp.Entity.SetValue(new LookupItem { Name = "kpmg_capability", Value = capability });
+            XrmApp.Entity.SetValue(new LookupItem { Name = "parentaccountid", Value = parentAccount });
+            leadAccount = XrmApp.Entity.GetValue(new LookupItem { Name = "parentaccountid" });
+            XrmApp.Entity.SetValue(new LookupItem { Name = "parentcontactid", Value = parentContact });
+
+            //used instead of xrmApp.Entity.Save() as it's causing an issue that the new client need form is opened in new tab
+            XrmApp.CommandBar.ClickCommand("Save");
+
+            //if the lead is duplicated, click ignore and save in duplicate detection popup
+            XrmApp.Dialogs.DuplicateDetection(true);
+        }
+
+        /// <summary>
+        /// Update lead BPF stage milestones and move to the next stage.
+        /// </summary>
+        private void UpdateLeadBPF()
+        {
+            XrmApp.Entity.SetValue(new OptionSet { Name = "kpmg_salesacceptedlead", Value = "110690000" });
+            XrmApp.Entity.SetValue("estimatedclosedate", DateTime.Now.AddDays(3).ToString("dd/MM/yyyy"));
+
+            double estimatedAmount = (isRestrictedProcess) ? 20000 : 26500;
+            XrmApp.Entity.SetValue("estimatedamount", estimatedAmount.ToString("C", CultureInfo.GetCultureInfo("en-GB")));
+
+            leadEstimatedBudget = XrmApp.Entity.GetValue("estimatedamount");
+
+            XrmApp.Entity.SetValue(new LookupItem { Name = "kpmg_opportunityowner", Value = "Gowri Thota" });
+
+            XrmApp.CommandBar.ClickCommand("Save");
+
+            XrmApp.Dialogs.DuplicateDetection(true);
+
+
+            XrmApp.Entity.SetValue(new OptionSet { Name = "kpmg_markasqualify", Value = "110690000" });
+
+            //the OOB method to move BPF to next stage is not working.
+            Win.WaitUntilAvailable(By.XPath("//button[@aria-label='Next Stage']")).Click();
+
+            //FIXME: replace the think time with waiting for the alert to show up
+            XrmApp.ThinkTime(5000);
+
+            //click ok in lead qualification alert
+            Win.SwitchTo().Alert().Accept();
+        }
+
+        /// <summary>
+        /// Managing the restricted opportunity process for both apps.
+        /// </summary>
+        /// <returns></returns>
+        public void OpportunityProcess(string appName)
+        {
+
+            //update opportunity fields and validate fields are inherited from lead
+            UpdateOpportunityForm(appName);
+
+            //Check opportunity fields are inherited from lead
+            ValidateOpportunityForm(appName);
+
+            //Check if Tag details are inherited from Lead to Opportunity
+            oppTags = KPMG_Helper.Form.RetrieveTagDetails();
+            CollectionAssert.AreEqual(leadTags, oppTags);
+
+            //create opportunity service record
+            CreateServiceRecord();
+
+            XrmApp.Dialogs.DuplicateDetection(true);
+
+            //Create other involved parties for opportunity
+            leadHelper.CreateOtherInvolvedParty(appName);
+            if (!isRestrictedProcess)
+            {
+                // create Marketing Edge record
+                AddMarketingEdge();
+                XrmApp.Dialogs.DuplicateDetection(true);
+            }
+            Win.Navigate().Refresh();
+            XrmApp.ThinkTime(7000);
+            //check if services from Opportunity are copied over to Engagement
+            XrmApp.Entity.SelectTab("Services");
+            oppServicesList = XrmApp.Entity.SubGrid.GetSubGridItems("KPMGOpportunityServices");
+
+            //check if all Team members are copied over from Opportunity to Engagement
+            XrmApp.Entity.SelectTab("Team Members");
+
+            string teamMembersSubgridName = string.Empty;
+
+            //set the subgrid name based on app
+            if (appName.IsValueEqualsTo(DTOs.Reference.KPMGAppName.Admin_Sales))
+            {
+                teamMembersSubgridName = "OpportunityTeam";
+            }
+            else
+            {
+                teamMembersSubgridName = "Subgrid_1";
+            }
+            oppTeamMembers = XrmApp.Entity.SubGrid.GetSubGridItems(teamMembersSubgridName);
+
+            //check if all Involved Parties are copied over from Opportunity to Engagement
+            XrmApp.Entity.SelectTab("Other Involved Parties");
+            string involvedPartiesSubgridName = string.Empty;
+
+            //set the subgrid name based on app
+            if (appName.IsValueEqualsTo(DTOs.Reference.KPMGAppName.Admin_Sales))
+            {
+                involvedPartiesSubgridName = "OtherEngagingParties";
+            }
+            else
+            {
+                involvedPartiesSubgridName = "Subgrid_2";
+            }
+            oppInvolvedParties = XrmApp.Entity.SubGrid.GetSubGridItems(involvedPartiesSubgridName);
+
+            if (!isRestrictedProcess)
+            {
+                // ADD SAN and ERA
+                PerformSANandERA();
+            }
+
+
+            //Manage opportunity BPF stages and milestones.
+            UpdateOpportunityBPF();
+        }
+
+        /// <summary>
+        /// Update opportunity fields
+        /// </summary>
+        /// <returns></returns>
+        private void UpdateOpportunityForm(string appName)
+        {
+            //setting opportunity fields
+            oppSupportedByIgnition = XrmApp.Entity.GetValue(new OptionSet { Name = "kpmg_supportedbyignition" });
+
+            opportunityName = XrmApp.Entity.GetValue("name");
+            if (isRestrictedProcess)
+            {
+                XrmApp.Entity.SetValue("kpmg_projectname", opportunityName);
+            }
+            double estimatedAmount = (isRestrictedProcess) ? 20000 : 26500;
+            XrmApp.Entity.SetValue("kpmg_primaryservicefee", estimatedAmount.ToString("C", CultureInfo.GetCultureInfo("en-GB")));
+
+            XrmApp.Entity.SetValue(new LookupItem { Name = "kpmg_profitcentre", Value = "CLR AAS" });
+            expectedProfitCenter = XrmApp.Entity.GetValue(new LookupItem { Name = "kpmg_profitcentre" });
+
+            DateTime clientDecisionDate = (DateTime)XrmApp.Entity.GetValue(new DateTimeControl("estimatedclosedate"));
+            expectedForecastStartDate = clientDecisionDate.AddDays((isRestrictedProcess) ? 7 : 2); // if restricted Add 7 days otherwise 2
+            expectedForecastEndDate = expectedForecastStartDate.AddDays((isRestrictedProcess) ? 7 : 10);// if restricted Add 7 days otherwise 10
+            XrmApp.Entity.SetValue("kpmg_forecaststartdate", expectedForecastStartDate);
+            XrmApp.Entity.SetValue("kpmg_forecastenddate", expectedForecastEndDate);
+
+            //checking engagement leader is disabled until primary service code is selected
+            Assert.IsTrue((Boolean)Win.ExecuteScript("return Xrm.Page.ui.controls.get('kpmg_engagementleader').getDisabled();"));
+            XrmApp.Entity.SetValue(new LookupItem { Name = "kpmg_primaryservicecode", Value = "1213 Other" });
+            expectedPrimaryServiceCode = XrmApp.Entity.GetValue(new LookupItem { Name = "kpmg_primaryservicecode" });
+            XrmApp.ThinkTime(3000);
+            Assert.IsFalse((Boolean)Win.ExecuteScript("return Xrm.Page.ui.controls.get('kpmg_engagementleader').getDisabled();"));
+
+            //if admin app, scroll down so that the lookup search results are on screen to be able to select the value
+            if (appName.IsValueEqualsTo(DTOs.Reference.KPMGAppName.Admin_Sales))
+            {
+                //scroll down so that the engagement leader lookup search result is in view
+                var engagementLeaderLookup = Win.FindElement(By.XPath("//input[@aria-label='Engagement Leader, Lookup']"));
+                ((IJavaScriptExecutor)Win).ExecuteScript("arguments[0].scrollIntoView(true);", engagementLeaderLookup);
+            }
+            XrmApp.Entity.SetValue(new LookupItem { Name = "kpmg_engagementleader", Value = "James Walley" });
+            if (!isRestrictedProcess) XrmApp.Entity.SetValue("kpmg_winprobability", "0");
+
+            XrmApp.CommandBar.ClickCommand("Save");
+            XrmApp.Dialogs.DuplicateDetection(true);
+        }
+
+        /// <summary>
+        /// Check opportunity fields are inherited from lead
+        /// </summary>
+        /// <returns></returns>
+        private void ValidateOpportunityForm(string appName)
+        {
+            //checking opportunity fields are inherited from lead
+            string expectedOpportunityType = "Standard";
+            oppEndClient = XrmApp.Entity.GetValue(new LookupItem { Name = "parentaccountid" });
+            expectedUKOpportunityFee = XrmApp.Entity.GetValue("kpmg_servicefeetotal");
+            string salesOrganization = XrmApp.Entity.GetValue(new LookupItem { Name = "kpmg_kpmgsalesorganisation" });
+            string opportunitySource = XrmApp.Entity.GetValue(new OptionSet { Name = "kpmg_source" });
+            string opportunityType = XrmApp.Entity.GetValue(new OptionSet { Name = "kpmg_opportunitytype" });
+            expectedEngagementLeader = XrmApp.Entity.GetValue(new LookupItem { Name = "kpmg_engagementleader" });
+            isOppRestricted = XrmApp.Entity.GetHeaderValue(new BooleanItem { Name = "kpmg_restrict" });
+            Assert.AreEqual(leadName, opportunityName);
+            Assert.AreEqual(leadAccount, oppEndClient);
+            Assert.AreEqual(leadEstimatedBudget, expectedUKOpportunityFee);
+            Assert.AreEqual("KPMG LLP", salesOrganization);
+            Assert.AreEqual(leadSource, opportunitySource);
+
+            //checking opportunity type is standard by default
+            Assert.AreEqual(expectedOpportunityType, opportunityType);
+
+            //checking header values are not null
+            Assert.NotNull(XrmApp.Entity.GetHeaderValue("kpmg_opportunityid"));
+
+            Assert.IsTrue((isRestrictedProcess) ? isOppRestricted : !isOppRestricted);
+
+            //engagement leader does not exist in the admin app form header
+            if (appName.IsValueEqualsTo(DTOs.Reference.KPMGAppName.Sales))
+            {
+                Assert.AreEqual(expectedEngagementLeader, XrmApp.Entity.GetHeaderValue(new LookupItem { Name = "kpmg_engagementleaderid" }));
+            }
+
+            //check if the header more fields panel is expanded and close it
+            KPMG_Helper.Form.CloseFormHeaderPanel();
+
+            if (isRestrictedProcess)
+            {
+                //checking project name requirement level
+                requiredVal = KPMG_Helper.Form.GetFieldRequirementLevel("kpmg_projectname");
+                CollectionAssert.Contains(expectedRequirementLevel, requiredVal);
+            }
+        }
+
+        /// <summary>
+        /// Manage opportunity BPF stages and milestones.
+        /// </summary>
+        /// <returns></returns>
+        private void UpdateOpportunityBPF()
+        {
+            string activeStage = KPMG_Helper.Form.RetrieveActiveBPFStage();
+            Assert.AreEqual("Scope", activeStage);
+
+            //checking BPF milestones are visible
+            Assert.IsTrue((Boolean)Win.ExecuteScript("return Xrm.Page.ui.controls.get('kpmg_primaryserviceadded').getVisible();"));
+            Assert.IsTrue((Boolean)Win.ExecuteScript("return Xrm.Page.ui.controls.get('kpmg_marketedgestatus').getVisible();"));
+
+            requiredVal = KPMG_Helper.Form.GetFieldRequirementLevel("kpmg_winprobability");
+            if (isRestrictedProcess)
+            {
+                CollectionAssert.Contains(expectedRequirementLevel, requiredVal);
+            }
+            else
+            {
+                Assert.AreEqual(requirementLevelOptional, requiredVal); // requriement level optional
+            }
+
+            if (isRestrictedProcess) XrmApp.Entity.SetValue("kpmg_winprobability", "50");
+
+            //move to propose stage
+            //the OOB method to move BPF to next stage is not working.
+            Win.WaitUntilAvailable(By.XPath("//button[@aria-label='Next Stage']")).Click();
+
+            XrmApp.Dialogs.DuplicateDetection(true);
+            XrmApp.ThinkTime(3000);
+
+            //checking propose stage milestones are visible
+            Assert.IsTrue((Boolean)Win.ExecuteScript("return Xrm.Page.ui.controls.get('kpmg_kpmgsalesorganisation').getVisible();"));
+            Assert.IsTrue((Boolean)Win.ExecuteScript("return Xrm.Page.ui.controls.get('header_process_kpmg_proposalsubmittedpresenteddate').getVisible();"));
+            Assert.IsTrue((Boolean)Win.ExecuteScript("return Xrm.Page.ui.controls.get('kpmg_overseasworking').getVisible();"));
+
+            XrmApp.Entity.SetValue("kpmg_proposalsubmittedpresenteddate", DateTime.Now.AddDays(3).ToString("dd/MM/yyyy"));
+
+            oppOverSeasTravelRequired = XrmApp.Entity.GetValue(new BooleanItem { Name = "kpmg_overseasworking" });
+
+            //move to convert stage
+            //the OOB method to move BPF to next stage is not working.
+            Win.WaitUntilAvailable(By.XPath("//button[@aria-label='Next Stage']")).Click();
+
+            XrmApp.Dialogs.DuplicateDetection(true);
+            XrmApp.ThinkTime(3000);
+
+            //checking convert stage milestones are mandatory
+            requiredVal = KPMG_Helper.Form.GetFieldRequirementLevel("kpmg_signedengagementletterreceivedchoice");
+            CollectionAssert.Contains(expectedRequirementLevel, requiredVal);
+
+            requiredVal = KPMG_Helper.Form.GetFieldRequirementLevel("kpmg_paymentterms");
+            CollectionAssert.Contains(expectedRequirementLevel, requiredVal);
+
+            requiredVal = KPMG_Helper.Form.GetFieldRequirementLevel("kpmg_clientvoicecontactid");
+            CollectionAssert.Contains(expectedRequirementLevel, requiredVal);
+
+            DateTime clientFeedbackSurveySendDate = (DateTime)XrmApp.Entity.GetValue(new DateTimeControl("kpmg_clientvoicesurveysenddate"));
+            Assert.AreEqual(expectedClientFeedbackSurveySendDate, clientFeedbackSurveySendDate);
+
+            string expectedProjectName = XrmApp.Entity.GetValue("name");
+            string projectName = XrmApp.Entity.GetValue("kpmg_clientvoiceprojectname");
+            Assert.AreEqual(expectedProjectName, projectName);
+
+            //if overseas travel required field is true, then overseas travel approval should be visible and mandatory
+            if (oppOverSeasTravelRequired)
+            {
+                requiredVal = KPMG_Helper.Form.GetFieldRequirementLevel("kpmg_ibtapproved");
+                CollectionAssert.Contains(expectedRequirementLevel, requiredVal);
+            }
+
+            XrmApp.Entity.SetValue(new OptionSet { Name = "kpmg_signedengagementletterreceivedchoice", Value = "110690001" });  //Yes
+            oppSignedEngagementLetter = XrmApp.Entity.GetValue(new OptionSet { Name = "header_process_kpmg_signedengagementletterreceivedchoice" });
+
+            //if signed engagement letter is set to no, then risk declaration should be visible and required
+            if (oppSignedEngagementLetter == "No")
+            {
+                Assert.IsTrue((Boolean)Win.ExecuteScript("return Xrm.Page.ui.controls.get('kpmg_newriskdeclarationchoice').getVisible();"));
+
+                requiredVal = KPMG_Helper.Form.GetFieldRequirementLevel("kpmg_newriskdeclarationchoice");
+                CollectionAssert.Contains(expectedRequirementLevel, requiredVal);
+
+                XrmApp.Entity.SetValue(new OptionSet { Name = "kpmg_newriskdeclarationchoice", Value = "700830000" });  //Yes
+                oppRiskDeclaration = XrmApp.Entity.GetValue(new OptionSet { Name = "kpmg_newriskdeclarationchoice" });
+            }
+
+            XrmApp.Entity.SetValue(new OptionSet { Name = "kpmg_paymentterms", Value = "110690000" });  //Pay immediately
+            oppPaymentTerms = XrmApp.Entity.GetValue(new OptionSet { Name = "header_process_kpmg_paymentterms" });
+
+            XrmApp.Entity.SetValue(new LookupItem { Name = "kpmg_clientvoicecontactid", Value = "Voice" });
+
+            XrmApp.ThinkTime(3000);
+
+            Win.WaitUntilAvailable(By.XPath("//button[@aria-label='Finish']")).Click();
+
+            //FIXME: replace the think time with waiting for the alert to show up
+            XrmApp.ThinkTime(9000);
+
+            //click ok in lead qualification alert
+            Win.SwitchTo().Alert().Accept();
+        }
+
+        /// <summary>
+        /// create opportunity service record and check fields are inherited from opportunity
+        /// </summary>
+        private void CreateServiceRecord()
+        {
+            XrmApp.Entity.SelectTab("Services");
+
+            XrmApp.Entity.SubGrid.ClickCommand("KPMGOpportunityServices", "New Service");
+
+            XrmApp.ThinkTime(3000);
+
+            string ukServiceCode = XrmApp.Entity.GetValue(new LookupItem { Name = "kpmg_kpmgserviceid" });
+            Assert.AreEqual(expectedPrimaryServiceCode, ukServiceCode);
+
+            string serviceFee = XrmApp.Entity.GetValue("kpmg_servicefee");
+            Assert.AreEqual(expectedUKOpportunityFee, serviceFee);
+
+            DateTime foreCastStartDate = (DateTime)XrmApp.Entity.GetValue(new DateTimeControl("kpmg_forecaststartdate"));
+            Assert.AreEqual(expectedForecastStartDate, foreCastStartDate);
+
+            DateTime foreCastEndDate = (DateTime)XrmApp.Entity.GetValue(new DateTimeControl("kpmg_forecastenddate"));
+            Assert.AreEqual(expectedForecastEndDate, foreCastEndDate);
+            expectedClientFeedbackSurveySendDate = ((DateTime)XrmApp.Entity.GetValue(new DateTimeControl("kpmg_forecastenddate"))).AddDays(14);
+
+            string engagementLeader = XrmApp.Entity.GetValue(new LookupItem { Name = "kpmg_engagementleaderid" });
+            Assert.AreEqual(expectedEngagementLeader, engagementLeader);
+
+            string profitCenter = XrmApp.Entity.GetValue(new LookupItem { Name = "kpmg_profitcentreid" });
+            Assert.AreEqual(expectedProfitCenter, profitCenter);
+
+            XrmApp.Entity.SetValue(new LookupItem { Name = "kpmg_engagementmanagerid", Value = "James Walley" });
+            XrmApp.Entity.SetValue(new OptionSet { Name = "kpmg_esgpercentage", Value = "700830004" }); //100
+
+            //Navigate to the Services checkbox
+            XrmApp.Entity.SelectTab("General");
+
+            Actions action = new Actions(Win);
+            action.KeyDown(Keys.Tab).Perform();
+            XrmApp.ThinkTime(1000);
+
+            action.KeyDown(Keys.Tab).Perform();
+            XrmApp.ThinkTime(1000);
+
+            action.KeyDown(Keys.Tab).Perform();
+            XrmApp.ThinkTime(1000);
+
+            action.KeyDown(Keys.Tab).Perform();
+            XrmApp.ThinkTime(1000);
+
+            action.KeyDown(Keys.Tab).Perform();
+            XrmApp.ThinkTime(1000);
+            action.SendKeys(Keys.Space).Perform();
+
+            XrmApp.CommandBar.ClickCommand("Save & Close");
+        }
+
+        /// <summary>
+        /// Managing the restricted engagement process for both apps.
+        /// </summary>
+        /// <returns></returns>
+        public void EngagementProcess()
+        {
+            ValidateEngagementForm();
+
+            //Check if Tag details are not inherited from Opportunity to Engagement
+            List<string> engTags = KPMG_Helper.Form.RetrieveTagDetails();
+            Assert.IsEmpty(engTags);
+
+            Win.Navigate().Refresh();
+
+            Win.WaitForPageToLoad();
+            //check if services from Opportunity are copied over to Engagement
+            XrmApp.Entity.SelectTab("Services");
+            List<GridItem> engServicesList = XrmApp.Entity.SubGrid.GetSubGridItems("Services");
+            Assert.IsTrue(KPMG_Helper.Form.AreListsEqual(oppServicesList, engServicesList));
+
+            //check if all Team members are copied over from Opportunity to Engagement
+            XrmApp.Entity.SelectTab("Team Members");
+            List<GridItem> engTeamMembers = XrmApp.Entity.SubGrid.GetSubGridItems("EngagementTeam");
+            Assert.IsTrue(KPMG_Helper.Form.AreListsEqual(oppTeamMembers, engTeamMembers));
+
+            //FIXME: GetSubGridItems method is failing for Involved Parties only, to be investigated as part of the E2E test
+            //check if all Involved Parties are copied over from Opportunity to Engagement
+            //XrmApp.Entity.SelectTab("Other Involved Parties");
+            //List<GridItem> engInvolvedParties = XrmApp.Entity.SubGrid.GetSubGridItems("OtherInvolvedParties");
+            //Assert.IsTrue(KPMG_Helper.Form.AreListsEqual(oppInvolvedParties, engInvolvedParties));
+
+            //Check if Opportunity details tab is hidden
+            List<string> headerTabValues = KPMG_Helper.Form.RetrieveListOfTabValues();
+
+            Assert.IsFalse(headerTabValues.Contains("Opportunity Details"));
+
+            UpdateEndDateInService();
+
+            ValidateEngagementBPF();
+        }
+
+        /// <summary>
+        /// Check engagement fields are inherited from opportunity
+        /// </summary>
+        /// <returns></returns>
+        private void ValidateEngagementForm()
+        {
+            //Check if Engagement header is having below fields with data inherited from Opportunity
+            string engagementEndClient = XrmApp.Entity.GetHeaderValue(new LookupItem { Name = "kpmg_primaryengagingpartyid" });
+            Assert.AreEqual(oppEndClient, engagementEndClient);
+
+            string opportunityName = XrmApp.Entity.GetHeaderValue(new LookupItem { Name = "kpmg_opportunityid" });
+            Assert.NotNull(opportunityName);
+
+            string opportunityFee = XrmApp.Entity.GetHeaderValue("kpmg_servicefeetotal");
+            Assert.AreEqual(expectedUKOpportunityFee, opportunityFee);
+
+            DateTime foreCastEndDate = (DateTime)XrmApp.Entity.GetHeaderValue(new DateTimeControl("kpmg_forecastenddate"));
+            Assert.AreEqual(expectedForecastEndDate, foreCastEndDate);
+
+            //check if the header more fields panel is expanded and close it
+            KPMG_Helper.Form.CloseFormHeaderPanel();
+
+            //Check if below fields data is inherited from Opportunity
+            if (isAdminApp)
+            {
+                //Navigate to the Opportunity Details
+                XrmApp.Entity.SelectTab("Opportunity Details"); //Opportunity Details
+            }
+            string engagementName = XrmApp.Entity.GetValue("kpmg_name");
+            Assert.AreEqual(opportunityName, engagementName);
+
+            string salesOrganization = XrmApp.Entity.GetValue(new LookupItem { Name = "kpmg_salesorganisationid" });
+            Assert.AreEqual("KPMG LLP", salesOrganization);
+
+            XrmApp.Entity.SelectTab("Summary");
+
+            string engSignedEngagementLetter = XrmApp.Entity.GetValue(new OptionSet { Name = "kpmg_hassignedengagementletter" });
+            Assert.AreEqual(oppSignedEngagementLetter, engSignedEngagementLetter);
+
+            string engRiskDeclaration = (string)Win.ExecuteScript("return Xrm.Page.getAttribute('kpmg_riskdeclaration').getValue();");
+            Assert.AreEqual(oppRiskDeclaration, engRiskDeclaration == null ? string.Empty : engRiskDeclaration);
+
+            string engPaymentTerms = XrmApp.Entity.GetValue(new OptionSet { Name = "kpmg_paymentterms" });
+            Assert.AreEqual(oppPaymentTerms, engPaymentTerms);
+
+            bool engOverSeasTravelRequired = XrmApp.Entity.GetValue(new BooleanItem { Name = "kpmg_overseasworking" });
+            Assert.AreEqual(oppOverSeasTravelRequired, engOverSeasTravelRequired);
+
+            string engSupportedByIgnition = XrmApp.Entity.GetValue(new OptionSet { Name = "kpmg_supportedbyignition" });
+            Assert.AreEqual(oppSupportedByIgnition, engSupportedByIgnition);
+
+            bool isEngRestricted = XrmApp.Entity.GetValue(new BooleanItem { Name = "kpmg_isrestricted" });
+            Assert.AreEqual(isOppRestricted, isEngRestricted);
+        }
+
+        /// <summary>
+        /// Manage engagement BPF.
+        /// </summary>
+        /// <returns></returns>
+        private void ValidateEngagementBPF()
+        {
+            //Check if Engagement is on Deliver stage
+            string activeStage = KPMG_Helper.Form.RetrieveActiveBPFStage();
+            Assert.AreEqual("Deliver", activeStage);
+
+            //Check if below fields are visible on Deliver stage BPF milestone and check if data is inherited from Opportunity
+            Assert.IsTrue((Boolean)Win.ExecuteScript("return Xrm.Page.ui.controls.get('header_process_kpmg_clientvoicecontactid').getVisible();"));
+            Assert.IsTrue((Boolean)Win.ExecuteScript("return Xrm.Page.ui.controls.get('header_process_kpmg_clientvoicesurveysenddate').getVisible();"));
+            Assert.IsTrue((Boolean)Win.ExecuteScript("return Xrm.Page.ui.controls.get('header_process_kpmg_clientvoiceprojectname').getVisible();"));
+
+            Win.WaitUntilAvailable(By.XPath("//button[@aria-label='Finish']")).Click();
+
+            //FIXME: replace the think time with waiting for the alert to show up
+            XrmApp.ThinkTime(7000);
+
+            //click ok in lead qualification alert
+            Win.SwitchTo().Alert().Accept();
+
+            //FIXME: if think time is removed then the enagagement is not closed
+            XrmApp.ThinkTime(5000);
+        }
+
+        /// <summary>
+        /// In the entity form of kpmg_opportunityservice, update END DATE and 'Save & Close'.
+        /// </summary>
+        private void UpdateEndDateInService()
+        {
+            XrmApp.Entity.SelectTab("Services");
+
+            XrmApp.Grid.HighLightRecord(0);
+            XrmApp.Grid.OpenRecord(0);
+
+            DateTime foreCastEndDate = (DateTime)XrmApp.Entity.GetValue(new DateTimeControl("kpmg_forecastenddate"));
+            XrmApp.Entity.SetValue("kpmg_forecastenddate", foreCastEndDate.AddDays(1).ToString("dd/MM/yyyy"));
+
+            XrmApp.CommandBar.ClickCommand("Save & Close");
+        }
+
+        /// <summary>
+        /// create lead record Non Restricted type also create related client need and convert the lead to opportunity
+        /// </summary>
+        /// <param name="currentApp"></param>
+        private void NonRestrictedLeadProcess(string currentApp)
+        {
+            // create a lead
+            CreateLead();
+
+            // create related client need
+            leadHelper.AddRelatedClientNeed("SL51 IPBR", false);
+            leadHelper.AddRelatedClientNeed("SL37 Investigations", true);
+
+            XrmApp.Entity.SelectTab("Summary");
+
+            //Add to queue
+            leadHelper.AddToQueue("MOD");
+
+            XrmApp.CommandBar.ClickCommand("Refresh");
+
+            //check if lead owner is blank
+            string leadOwner = XrmApp.Entity.GetValue(new LookupItem { Name = "kpmg_leadowner" });
+            while (!string.IsNullOrEmpty(leadOwner))
+            {
+                XrmApp.CommandBar.ClickCommand("Refresh");
+                leadOwner = XrmApp.Entity.GetValue(new LookupItem { Name = "kpmg_leadowner" });
+            }
+
+            Assert.IsTrue(string.IsNullOrEmpty(leadOwner));
+
+            //Pick the queue item
+            leadHelper.PickQueueItem(leadName, currentApp);
+
+            //reopen the lead form
+            XrmApp.Grid.OpenRecord(0);
+
+            //add tags
+            leadHelper.AddTag("Data Migration");
+            leadHelper.AddTag("Cyber Risk Insights");
+
+            XrmApp.ThinkTime(2000);
+            leadTags = KPMG_Helper.Form.RetrieveTagDetails();
+
+            UpdateLeadBPF();
+        }
+
+
+        /// <summary>
+        /// Add MarketingEdge record related to Opportunity
+        /// </summary>
+        private void AddMarketingEdge()
+        {
+            XrmApp.CommandBar.ClickCommand("MarketEDGE");
+
+            Win.WaitForPageToLoad(); // FIXME : wait till html element loaded
+
+            Win.SwitchTo().Frame("WebResource_marketedge");
+
+            // XrmApp.ThinkTime(3000);
+            for (var i = 1; i < 8; i++)
+            {
+                Win.FindElement(By.XPath("//*[@id='questionyes" + i + "']")).Click();
+            }
+            //Win.FindElement(By.XPath("//*[@id='questionyes1']")).Click();
+            //// XrmApp.ThinkTime(1000);
+            //Win.FindElement(By.XPath("//*[@id='questionyes2']")).Click();
+            //// XrmApp.ThinkTime(1000);
+            //Win.FindElement(By.XPath("//*[@id='questionyes3']")).Click();
+            //// XrmApp.ThinkTime(1000);
+            //Win.FindElement(By.XPath("//*[@id='questionyes4']")).Click();
+            // XrmApp.ThinkTime(1000);
+
+            SelectElement exampleoption = new SelectElement(Win.FindElement(By.XPath("//*[@id=\"engLeaderQuestionDropDown\"]")));
+            exampleoption.SelectByValue("1");
+            Win.SwitchTo().ParentFrame();
+
+            XrmApp.CommandBar.ClickCommand("Save & Close");
+
+        }
+
+        /// <summary>
+        /// click on opportunity risk portal button
+        /// and create SAN and ERA record 
+        /// </summary>
+        private void PerformSANandERA()
+        {
+            XrmApp.CommandBar.ClickCommand("Risk Portal");
+            XrmApp.ThinkTime(5000);
+
+            Win.SwitchTo().Frame("fullscreen-app-host");
+
+            // click on button Add New SAN
+            string buttonAddNewSAN = "//div[contains(text(), 'Add New SAN')]";
+
+            Win.FindElement(By.XPath(buttonAddNewSAN)).Click();
+
+            XrmApp.ThinkTime(5000);
+            IWebElement sentinelRequestdropdown = Win.FindElement(By.Id(KPMG_Helper.Form.GetdivIdByTitle("Sentinel Request Status")));
+
+            // Click on the dropdown menu to open it
+            sentinelRequestdropdown.Click();
+
+            // Find the "Approved" option in the dropdown menu
+            IWebElement option = Win.FindElement(By.XPath("//span[text()='Approved']"));
+
+            // Click on the "Approved" option to select it
+            option.Click();
+
+            // click on Submit button to save the record
+            string submitButton = "//div[contains(text(), 'Submit')]";
+            Win.FindElement(By.XPath(submitButton)).Click();
+            XrmApp.ThinkTime(10000);
+
+
+            // click on button Add New ERA
+            string buttonAddNewERA = "//div[contains(text(), 'Add New ERA')]";
+
+            Win.FindElement(By.XPath(buttonAddNewERA)).Click();
+
+            XrmApp.ThinkTime(3000);
+            string evaluationStageDivId = KPMG_Helper.Form.GetdivIdByTitle("Evaluation Stage");
+            IWebElement evaluationStagedropdown = Win.FindElement(By.Id(evaluationStageDivId));
+
+            // Click on the dropdown menu to open it
+            evaluationStagedropdown.Click();
+
+            // Find the "Approved" option in the dropdown menu
+            var evaluationStageApprovedOption = Win.FindElement(By.XPath("//div[@id='powerapps-flyout-" + evaluationStageDivId + "']//span[text()='Approved']"));
+
+            // Click on the "Approved" option to select it
+            evaluationStageApprovedOption.Click();
+
+
+            string evaluationStatusDivId = KPMG_Helper.Form.GetdivIdByTitle("Evaluation Status");
+            var evaluationStatusCombobox = Win.FindElement(By.Id(evaluationStatusDivId));
+
+            // Click on the combobox to open the dropdown
+            evaluationStatusCombobox.Click();
+
+            // Find the "Approved" option by its text
+            var approvedOption = evaluationStatusCombobox.FindElement(By.XPath("//div[@id='powerapps-flyout-" + evaluationStatusDivId + "']//span[text()='Approved']"));
+
+            // Click on the "Approved" option to select it
+            approvedOption.Click();
+
+            // CLICK ON SUBMIT BUTTON to save the record
+            Win.FindElement(By.XPath(submitButton)).Click();
+            XrmApp.ThinkTime(5000);
+            Win.Navigate().Back(); // go back to opportunity record
+
+            XrmApp.ThinkTime(8000);
+
+        }
+
+    }
+}
